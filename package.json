@@ -8,12 +8,15 @@
     "cdk": "cdk"
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1160.0",
+    "@aws-sdk/lib-dynamodb": "^3.1160.0",
     "@swc/core": "^1.15.0",
     "@swc/jest": "^0.2.39",
     "@types/jest": "^30",
     "@types/node": "^24.10.1",
-    "jest": "^30",
     "aws-cdk": "2.1146.1",
+    "esbuild": "^0.28.2",
+    "jest": "^30",
     "tsx": "^4.23.0",
     "typescript": "~7.0.2"
   },

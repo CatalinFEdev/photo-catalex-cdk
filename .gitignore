@@ -6,3 +6,11 @@ node_modules
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+scripts/
+.github/
+config/*.local.json
+
+.idea
+out.json
+payload.json
