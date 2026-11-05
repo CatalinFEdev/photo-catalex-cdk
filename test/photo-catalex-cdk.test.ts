@@ -53,14 +53,11 @@ describe('PhotoCatalexCdkStack', () => {
   });
 
   describe('Lambda', () => {
-    test('creates the two API functions', () => {
-      template.resourceCountIs('AWS::Lambda::Function', 2);
+    test('creates the users API function', () => {
+      template.resourceCountIs('AWS::Lambda::Function', 1);
     });
 
-    test.each([
-      ['USERS_TABLE_NAME', 'PhotoUsers'],
-      ['USER_PROFILES_TABLE_NAME', 'PhotoUserProfiles'],
-    ])('function configured with %s', (envVar, tableId) => {
+    test('function is configured with tables and avatar bucket', () => {
       template.hasResourceProperties('AWS::Lambda::Function', {
         Runtime: 'nodejs24.x',
         Architectures: ['arm64'],
@@ -69,28 +66,33 @@ describe('PhotoCatalexCdkStack', () => {
         Handler: 'index.handler',
         Environment: {
           Variables: {
-            [envVar]: { Ref: Match.stringLikeRegexp(tableId) },
+            USERS_TABLE_NAME: { Ref: Match.stringLikeRegexp('PhotoUsers') },
+            USER_PROFILES_TABLE_NAME: { Ref: Match.stringLikeRegexp('PhotoUserProfiles') },
+            AVATAR_BUCKET: 'photo-ca-user-profiles',
           },
         },
       });
     });
 
-    test('log groups retain logs for one month', () => {
-      template.resourceCountIs('AWS::Logs::LogGroup', 2);
-      template.allResourcesProperties('AWS::Logs::LogGroup', {
-        RetentionInDays: 30,
-      });
+    test('log group retains logs for one month', () => {
+      template.resourceCountIs('AWS::Logs::LogGroup', 1);
+      template.allResourcesProperties('AWS::Logs::LogGroup', { RetentionInDays: 30 });
     });
 
-    test('functions only get read access to their table', () => {
+    test('function can read and write the tables but not delete', () => {
       const policies = JSON.stringify(template.findResources('AWS::IAM::Policy'));
-      expect(policies).toContain('dynamodb:GetItem');
-      expect(policies).not.toContain('dynamodb:PutItem');
+      ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Query', 'dynamodb:Scan'].forEach((a) =>
+        expect(policies).toContain(a),
+      );
       expect(policies).not.toContain('dynamodb:DeleteItem');
-      expect(policies).not.toContain('dynamodb:UpdateItem');
+    });
+
+    test('avatar access is limited to the avatars/ prefix', () => {
+      const policies = JSON.stringify(template.findResources('AWS::IAM::Policy'));
+      expect(policies).toContain('photo-ca-user-profiles/avatars/*');
+      expect(policies).not.toContain('s3:DeleteObject');
     });
   });
-
   describe('API Gateway', () => {
     test('creates a REST API', () => {
       template.hasResourceProperties('AWS::ApiGateway::RestApi', {
@@ -120,26 +122,26 @@ describe('PhotoCatalexCdkStack', () => {
       );
     });
 
-    test('resource paths exist', () => {
-      ['users', 'me', 'profile', 'admin', '{userId}'].forEach((p) => {
+    test('resource paths match the Angular app contract', () => {
+      ['user', 'users', 'profile', 'avatar', '{userId}'].forEach((p) => {
         template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: p });
       });
-      // users, me, profile (x2), admin, users, {userId}
+      // user, user/profile, user/avatar, users, users/{userId}, + profile and avatar
       template.resourceCountIs('AWS::ApiGateway::Resource', 7);
     });
 
-    test('all GET methods are secured with Cognito and use Lambda proxy', () => {
-      const methods = template.findResources('AWS::ApiGateway::Method', {
-        Properties: { HttpMethod: 'GET' },
-      });
-      expect(Object.keys(methods)).toHaveLength(4);
-      Object.values(methods).forEach((m) => {
+    test('all non-OPTIONS methods are secured with Cognito and use Lambda proxy', () => {
+      const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).filter(
+        (m) => m.Properties.HttpMethod !== 'OPTIONS',
+      );
+      // user(4) profile(3) avatar(1) users(2) userId(4) profile(3) avatar(1)
+      expect(methods).toHaveLength(18);
+      methods.forEach((m) => {
         expect(m.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
         expect(m.Properties.AuthorizerId).toBeDefined();
         expect(m.Properties.Integration.Type).toBe('AWS_PROXY');
       });
     });
-
     test('CORS preflight OPTIONS methods are public', () => {
       template.hasResourceProperties('AWS::ApiGateway::Method', {
         HttpMethod: 'OPTIONS',
@@ -149,7 +151,7 @@ describe('PhotoCatalexCdkStack', () => {
             Match.objectLike({
               ResponseParameters: Match.objectLike({
                 'method.response.header.Access-Control-Allow-Headers': "'Authorization,Content-Type'",
-                'method.response.header.Access-Control-Allow-Methods': "'GET,OPTIONS'",
+                'method.response.header.Access-Control-Allow-Methods': "'GET,POST,PUT,PATCH,OPTIONS'",
               }),
             }),
           ]),
@@ -166,7 +168,7 @@ describe('PhotoCatalexCdkStack', () => {
   });
 
   describe('Outputs', () => {
-    test.each(['GetUserFnName', 'GetUserProfileFnName', 'ApiUrl'])('exports %s', (name) => {
+    test.each(['UsersApiFnName', 'ApiUrl'])('exports %s', (name) => {
       template.hasOutput(name, {});
     });
   });

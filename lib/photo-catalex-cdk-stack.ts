@@ -2,12 +2,18 @@ import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Construct } from 'constructs';
 import { PhotoLambdaFunction } from './constructs/photo-lambda-function';
 
 export interface PhotoCatalexCdkStackProps extends cdk.StackProps {
   userPoolId: string;
+  /** Existing S3 bucket for avatars (objects under vatars/). */
+  avatarBucketName?: string;
+  /** Optional CloudFront domain serving avatars; presigned URLs are used when empty. */
+  avatarCdnDomain?: string;
 }
 
 export class PhotoCatalexCdkStack extends cdk.Stack {
@@ -16,8 +22,8 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
   public readonly picturesTable: dynamodb.ITable;
   public readonly usersTable: dynamodb.Table;
   public readonly userProfilesTable: dynamodb.Table;
-  public readonly getUserFn: nodejs.NodejsFunction;
-  public readonly getUserProfileFn: nodejs.NodejsFunction;
+  public readonly avatarBucket: s3.IBucket;
+  public readonly usersApiFn: nodejs.NodejsFunction;
   public readonly api: apigateway.RestApi;
 
   constructor(scope: Construct, id: string, props: PhotoCatalexCdkStackProps) {
@@ -48,17 +54,26 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
-    this.getUserFn = new PhotoLambdaFunction(this, 'GetUserFn', {
-      fileName: 'get-user',
-      environment: { USERS_TABLE_NAME: this.usersTable.tableName },
-    });
-    this.usersTable.grantReadData(this.getUserFn);
+    this.avatarBucket = s3.Bucket.fromBucketName(this, 'AvatarBucket', props.avatarBucketName ?? 'photo-ca-user-profiles');
 
-    this.getUserProfileFn = new PhotoLambdaFunction(this, 'GetUserProfileFn', {
-      fileName: 'get-user-profile',
-      environment: { USER_PROFILES_TABLE_NAME: this.userProfilesTable.tableName },
+    this.usersApiFn = new PhotoLambdaFunction(this, 'UsersApiFn', {
+      fileName: 'users-api',
+      environment: {
+        USERS_TABLE_NAME: this.usersTable.tableName,
+        USER_PROFILES_TABLE_NAME: this.userProfilesTable.tableName,
+        AVATAR_BUCKET: this.avatarBucket.bucketName,
+        ...(props.avatarCdnDomain ? { AVATAR_CDN_DOMAIN: props.avatarCdnDomain } : {}),
+      },
     });
-    this.userProfilesTable.grantReadData(this.getUserProfileFn);
+    // Least privilege: no DeleteItem, and only the avatars/ prefix in S3
+    this.usersTable.grant(this.usersApiFn, 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Query', 'dynamodb:Scan');
+    this.userProfilesTable.grant(this.usersApiFn, 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem');
+    this.usersApiFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject', 's3:PutObject'],
+        resources: [this.avatarBucket.arnForObjects('avatars/*')],
+      }),
+    );
 
     this.api = new apigateway.RestApi(this, 'PhotoApi', {
       restApiName: 'photo-catalex-api',
@@ -69,9 +84,18 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
       },
       defaultCorsPreflightOptions: {
         allowOrigins: ['http://localhost:4200', 'https://photo.catalinalexandru.at'],
-        allowMethods: ['GET', 'OPTIONS'],
+        allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS'],
         allowHeaders: ['Authorization', 'Content-Type'],
       },
+    });
+
+    this.api.addGatewayResponse('Default4xx', {
+      type: apigateway.ResponseType.DEFAULT_4XX,
+      responseHeaders: { 'Access-Control-Allow-Origin': "'https://photo.catalinalexandru.at'" },
+    });
+    this.api.addGatewayResponse('Default5xx', {
+      type: apigateway.ResponseType.DEFAULT_5XX,
+      responseHeaders: { 'Access-Control-Allow-Origin': "'https://photo.catalinalexandru.at'" },
     });
 
     const authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'PhotoAuthorizer', {
@@ -83,19 +107,24 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
       authorizer,
     };
 
-    const getUserIntegration = new apigateway.LambdaIntegration(this.getUserFn);
-    const getUserProfileIntegration = new apigateway.LambdaIntegration(this.getUserProfileFn);
+    const usersApi = new apigateway.LambdaIntegration(this.usersApiFn);
+    const addMethods = (resource: apigateway.IResource, methods: string[]) =>
+      methods.forEach((method) => resource.addMethod(method, usersApi, secured));
 
-    const me = this.api.root.addResource('users').addResource('me');
-    me.addMethod('GET', getUserIntegration, secured);
-    me.addResource('profile').addMethod('GET', getUserProfileIntegration, secured);
+    // Same contract as the Angular app: /user (self) and /users/{userId} (admin or owner)
+    const user = this.api.root.addResource('user');
+    addMethods(user, ['GET', 'POST', 'PUT', 'PATCH']);
+    addMethods(user.addResource('profile'), ['POST', 'PUT', 'PATCH']);
+    addMethods(user.addResource('avatar'), ['POST']);
 
-    const adminUser = this.api.root.addResource('admin').addResource('users').addResource('{userId}');
-    adminUser.addMethod('GET', getUserIntegration, secured);
-    adminUser.addResource('profile').addMethod('GET', getUserProfileIntegration, secured);
+    const users = this.api.root.addResource('users');
+    addMethods(users, ['GET', 'POST']);
+    const userById = users.addResource('{userId}');
+    addMethods(userById, ['GET', 'POST', 'PUT', 'PATCH']);
+    addMethods(userById.addResource('profile'), ['POST', 'PUT', 'PATCH']);
+    addMethods(userById.addResource('avatar'), ['POST']);
 
-    new cdk.CfnOutput(this, 'GetUserFnName', { value: this.getUserFn.functionName });
-    new cdk.CfnOutput(this, 'GetUserProfileFnName', { value: this.getUserProfileFn.functionName });
+    new cdk.CfnOutput(this, 'UsersApiFnName', { value: this.usersApiFn.functionName });
     new cdk.CfnOutput(this, 'ApiUrl', { value: this.api.url });
   }
 }

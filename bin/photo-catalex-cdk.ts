@@ -8,7 +8,11 @@ const configPath = path.join(__dirname, '..', 'config', 'dev.local.json');
 if (!fs.existsSync(configPath)) {
   throw new Error('Missing config/dev.local.json (copy config/example.json and fill in the values)');
 }
-const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { userPoolId: string };
+const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+  userPoolId: string;
+  avatarBucketName?: string;
+  avatarCdnDomain?: string;
+};
 
 const app = new cdk.App();
 
@@ -18,6 +22,8 @@ new PhotoCatalexCdkStack(app, 'PhotoCatalexCdkStack', {
     region: 'eu-central-1',
   },
   userPoolId: config.userPoolId,
+  avatarBucketName: config.avatarBucketName,
+  avatarCdnDomain: config.avatarCdnDomain,
 });
 
 
