@@ -4,6 +4,8 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Construct } from 'constructs';
 import { PhotoLambdaFunction } from './constructs/photo-lambda-function';
@@ -24,6 +26,12 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
   public readonly userProfilesTable: dynamodb.Table;
   public readonly avatarBucket: s3.IBucket;
   public readonly usersApiFn: nodejs.NodejsFunction;
+  public readonly catalogApiFn: nodejs.NodejsFunction;
+  public readonly originalsTable: dynamodb.Table;
+  public readonly originalsBucket: s3.IBucket;
+  public readonly picturesBucket: s3.IBucket;
+  public readonly originalsApiFn: nodejs.NodejsFunction;
+  public readonly processOriginalFn: nodejs.NodejsFunction;
   public readonly api: apigateway.RestApi;
 
   constructor(scope: Construct, id: string, props: PhotoCatalexCdkStackProps) {
@@ -75,6 +83,65 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
       }),
     );
 
+    this.catalogApiFn = new PhotoLambdaFunction(this, 'CatalogApiFn', {
+      fileName: 'catalog-api',
+      environment: {
+        CATEGORIES_TABLE_NAME: this.categoriesTable.tableName,
+        PICTURES_TABLE_NAME: this.picturesTable.tableName,
+      },
+    });
+    const catalogActions = ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Scan'];
+    this.categoriesTable.grant(this.catalogApiFn, ...catalogActions);
+    this.picturesTable.grant(this.catalogApiFn, ...catalogActions);
+
+    this.originalsTable = new dynamodb.Table(this, 'PhotoOriginals', {
+      tableName: 'photo-originals',
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Existing bucket (CORS already allows browser PUTs). No size limit: browsers upload with presigned PUT URLs
+    this.originalsBucket = s3.Bucket.fromBucketName(this, 'OriginalsBucket', 'photo-pictures-originals');
+    this.picturesBucket = s3.Bucket.fromBucketName(this, 'PicturesBucket', 'photo-pictures');
+
+    this.originalsApiFn = new PhotoLambdaFunction(this, 'OriginalsApiFn', {
+      fileName: 'originals-api',
+      environment: {
+        ORIGINALS_TABLE_NAME: this.originalsTable.tableName,
+        ORIGINALS_BUCKET: this.originalsBucket.bucketName,
+      },
+    });
+    this.originalsTable.grant(this.originalsApiFn, 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Scan');
+    this.originalsBucket.grantPut(this.originalsApiFn);
+
+    // Creates the <=1000px copy in photo-pictures and stores the EXIF data
+    this.processOriginalFn = new PhotoLambdaFunction(this, 'ProcessOriginalFn', {
+      fileName: 'process-original',
+      memorySize: 2048,
+      timeout: cdk.Duration.minutes(5),
+      withSharp: true,
+      environment: {
+        ORIGINALS_TABLE_NAME: this.originalsTable.tableName,
+        PICTURES_BUCKET: this.picturesBucket.bucketName,
+      },
+    });
+    this.originalsTable.grant(this.processOriginalFn, 'dynamodb:UpdateItem');
+    this.originalsBucket.grantRead(this.processOriginalFn);
+    this.processOriginalFn.addToRolePolicy(
+      new iam.PolicyStatement({ actions: ['s3:PutObject'], resources: [this.picturesBucket.arnForObjects('*')] }),
+    );
+    // The bucket already notifies photo-ca-admin-api and S3 rejects overlapping notifications,
+    // so the processor is triggered through EventBridge (must be enabled on the bucket, see README)
+    new events.Rule(this, 'OriginalUploadedRule', {
+      eventPattern: {
+        source: ['aws.s3'],
+        detailType: ['Object Created'],
+        detail: { bucket: { name: [this.originalsBucket.bucketName] } },
+      },
+      targets: [new targets.LambdaFunction(this.processOriginalFn, { retryAttempts: 2 })],
+    });
+
     this.api = new apigateway.RestApi(this, 'PhotoApi', {
       restApiName: 'photo-catalex-api',
       deployOptions: {
@@ -124,6 +191,24 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
     addMethods(userById.addResource('profile'), ['POST', 'PUT', 'PATCH']);
     addMethods(userById.addResource('avatar'), ['POST']);
 
+    // Reads for any signed-in user; writes are restricted to the `admins` group in the Lambda
+    const catalogApi = new apigateway.LambdaIntegration(this.catalogApiFn);
+    const addCatalogRoutes = (name: string) => {
+      const collection = this.api.root.addResource(name);
+      ['GET', 'POST', 'PUT'].forEach((method) => collection.addMethod(method, catalogApi, secured));
+      const item = collection.addResource('{id}');
+      ['GET', 'PUT', 'PATCH'].forEach((method) => item.addMethod(method, catalogApi, secured));
+    };
+    addCatalogRoutes('photo-categories');
+    addCatalogRoutes('photo-pictures');
+
+    const originalsApi = new apigateway.LambdaIntegration(this.originalsApiFn);
+    const originals = this.api.root.addResource('photo-originals');
+    ['GET', 'POST'].forEach((method) => originals.addMethod(method, originalsApi, secured));
+    originals.addResource('{id}').addMethod('GET', originalsApi, secured);
+
+    new cdk.CfnOutput(this, 'OriginalsApiFnName', { value: this.originalsApiFn.functionName });
+    new cdk.CfnOutput(this, 'CatalogApiFnName', { value: this.catalogApiFn.functionName });
     new cdk.CfnOutput(this, 'UsersApiFnName', { value: this.usersApiFn.functionName });
     new cdk.CfnOutput(this, 'ApiUrl', { value: this.api.url });
   }

@@ -16,8 +16,8 @@ describe('PhotoCatalexCdkStack', () => {
   });
 
   describe('DynamoDB', () => {
-    test('creates exactly two tables', () => {
-      template.resourceCountIs('AWS::DynamoDB::Table', 2);
+    test('creates exactly three tables', () => {
+      template.resourceCountIs('AWS::DynamoDB::Table', 3);
     });
 
     test('photo-users table with username GSI', () => {
@@ -53,8 +53,8 @@ describe('PhotoCatalexCdkStack', () => {
   });
 
   describe('Lambda', () => {
-    test('creates the users API function', () => {
-      template.resourceCountIs('AWS::Lambda::Function', 1);
+    test('creates the API functions and the image processor', () => {
+      template.resourceCountIs('AWS::Lambda::Function', 4);
     });
 
     test('function is configured with tables and avatar bucket', () => {
@@ -75,7 +75,7 @@ describe('PhotoCatalexCdkStack', () => {
     });
 
     test('log group retains logs for one month', () => {
-      template.resourceCountIs('AWS::Logs::LogGroup', 1);
+      template.resourceCountIs('AWS::Logs::LogGroup', 4);
       template.allResourcesProperties('AWS::Logs::LogGroup', { RetentionInDays: 30 });
     });
 
@@ -127,15 +127,15 @@ describe('PhotoCatalexCdkStack', () => {
         template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: p });
       });
       // user, user/profile, user/avatar, users, users/{userId}, + profile and avatar
-      template.resourceCountIs('AWS::ApiGateway::Resource', 7);
+      template.resourceCountIs('AWS::ApiGateway::Resource', 13);
     });
 
     test('all non-OPTIONS methods are secured with Cognito and use Lambda proxy', () => {
       const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).filter(
         (m) => m.Properties.HttpMethod !== 'OPTIONS',
       );
-      // user(4) profile(3) avatar(1) users(2) userId(4) profile(3) avatar(1)
-      expect(methods).toHaveLength(18);
+      // users: user(4) profile(3) avatar(1) users(2) userId(4) profile(3) avatar(1); catalog: 2 x (collection 3 + item 3); originals: collection 2 + item 1
+      expect(methods).toHaveLength(33);
       methods.forEach((m) => {
         expect(m.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
         expect(m.Properties.AuthorizerId).toBeDefined();
@@ -167,8 +167,44 @@ describe('PhotoCatalexCdkStack', () => {
     });
   });
 
+  describe('Originals pipeline', () => {
+    test('photo-originals table keyed by id and retained', () => {
+      template.hasResource('AWS::DynamoDB::Table', {
+        Properties: Match.objectLike({
+          TableName: 'photo-originals',
+          KeySchema: [{ AttributeName: 'id', KeyType: 'HASH' }],
+        }),
+        DeletionPolicy: 'Retain',
+      });
+    });
+
+    test('no bucket is created (existing buckets are referenced)', () => {
+      template.resourceCountIs('AWS::S3::Bucket', 0);
+    });
+
+    test('new originals trigger the processor through EventBridge', () => {
+      template.hasResourceProperties('AWS::Events::Rule', {
+        EventPattern: {
+          source: ['aws.s3'],
+          'detail-type': ['Object Created'],
+          detail: { bucket: { name: ['photo-pictures-originals'] } },
+        },
+      });
+    });
+
+    test('processor is sized for large images and writes to photo-pictures', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        MemorySize: 2048,
+        Timeout: 300,
+        Environment: { Variables: Match.objectLike({ PICTURES_BUCKET: 'photo-pictures' }) },
+      });
+      const policies = JSON.stringify(template.findResources('AWS::IAM::Policy'));
+      expect(policies).toContain(':s3:::photo-pictures/*');
+    });
+  });
+
   describe('Outputs', () => {
-    test.each(['UsersApiFnName', 'ApiUrl'])('exports %s', (name) => {
+    test.each(['UsersApiFnName', 'CatalogApiFnName', 'OriginalsApiFnName', 'ApiUrl'])('exports %s', (name) => {
       template.hasOutput(name, {});
     });
   });
