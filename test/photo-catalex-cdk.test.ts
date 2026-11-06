@@ -87,6 +87,23 @@ describe('PhotoCatalexCdkStack', () => {
       expect(policies).not.toContain('dynamodb:DeleteItem');
     });
 
+    test('catalog function is wired to the app1 and app2 tables', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Environment: {
+          Variables: Match.objectLike({
+            CATEGORIES_TABLE_NAME: 'photo-categories',
+            PICTURES_TABLE_NAME: 'photo-pictures',
+            ART_CATEGORIES_TABLE_NAME: 'categories',
+            ART_PICTURES_TABLE_NAME: 'pictures',
+          }),
+        },
+      });
+      const policies = JSON.stringify(template.findResources('AWS::IAM::Policy'));
+      ['table/photo-categories', 'table/photo-pictures', 'table/categories', 'table/pictures'].forEach((t) =>
+        expect(policies).toContain(t),
+      );
+    });
+
     test('avatar access is limited to the avatars/ prefix', () => {
       const policies = JSON.stringify(template.findResources('AWS::IAM::Policy'));
       expect(policies).toContain('photo-ca-user-profiles/avatars/*');
@@ -127,15 +144,15 @@ describe('PhotoCatalexCdkStack', () => {
         template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: p });
       });
       // user, user/profile, user/avatar, users, users/{userId}, + profile and avatar
-      template.resourceCountIs('AWS::ApiGateway::Resource', 13);
+      template.resourceCountIs('AWS::ApiGateway::Resource', 17);
     });
 
     test('all non-OPTIONS methods are secured with Cognito and use Lambda proxy', () => {
       const methods = Object.values(template.findResources('AWS::ApiGateway::Method')).filter(
         (m) => m.Properties.HttpMethod !== 'OPTIONS',
       );
-      // users: user(4) profile(3) avatar(1) users(2) userId(4) profile(3) avatar(1); catalog: 2 x (collection 3 + item 3); originals: collection 2 + item 1
-      expect(methods).toHaveLength(33);
+      // users: user(4) profile(3) avatar(1) users(2) userId(4) profile(3) avatar(1);       catalog: 4 x (collection 3 + item 3); originals: collection 2 + item 1
+      expect(methods).toHaveLength(45);
       methods.forEach((m) => {
         expect(m.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
         expect(m.Properties.AuthorizerId).toBeDefined();

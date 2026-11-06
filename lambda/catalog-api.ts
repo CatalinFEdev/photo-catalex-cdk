@@ -18,6 +18,8 @@ const service = new CatalogService(
   {
     categories: process.env.CATEGORIES_TABLE_NAME!,
     pictures: process.env.PICTURES_TABLE_NAME!,
+    artPictures: process.env.ART_PICTURES_TABLE_NAME!,
+    artCategories: process.env.ART_CATEGORIES_TABLE_NAME!,
   },
 );
 

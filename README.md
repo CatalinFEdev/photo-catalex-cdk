@@ -9,22 +9,23 @@ See [doc/architecture.md](doc/architecture.md) for the current state, the target
 
 ## Resources
 
-| Resource      | Name                            | Managed by CDK    | Status       | Notes                                                                                         |
-|---------------|---------------------------------|-------------------|--------------|-----------------------------------------------------------------------------------------------|
-| DynamoDB      | `photo-categories`              | No (referenced)   | Existing     | No GSIs                                                                                       |
-| DynamoDB      | `photo-pictures`                | No (referenced)   | Existing     | No GSIs                                                                                       |
-| DynamoDB      | `photo-users`                   | Yes               | Deployed     | PK `userId`, GSI `username-index`, on-demand, retained                                        |
-| DynamoDB      | `photo-user-profiles`           | Yes               | Deployed     | PK `userId`, on-demand, retained                                                              |
-| Cognito       | Existing User Pool              | No (referenced)   | Referenced   | Referenced with `fromUserPoolId`; ID kept in git-ignored config                               |
-| API Gateway   | REST API `photo-catalex-api`    | Yes               | Deployed     | Stage `prod`, throttling, CORS, Cognito authorizer on every route                             |
-| Lambda        | `UsersApiFn`                    | Yes               | Defined      | Single handler for the `/user` and `/users` routes (same contract as the Angular app)         |
-| Lambda        | `CatalogApiFn`                  | Yes               | Defined      | `/photo-categories` and `/photo-pictures` routes (admin writes, authenticated reads)          |
-| S3            | `photo-ca-user-profiles`        | No (referenced)   | Existing     | Avatars under `avatars/` (presigned upload/read)                                              |
-| DynamoDB      | `photo-originals`               | Yes               | Defined      | PK `id`, on-demand, retained. Upload status, file info and EXIF data                          |
-| S3            | `photo-pictures-originals`      | No (referenced)   | Existing     | Originals, no size limit. Key `<id>/<fileName>`; CORS already allows PUT                      |
-| S3            | `photo-pictures`                | No (referenced)   | Existing     | Website copies (long side max 1000px, JPEG), key `<id>/0.jpg`                                 |
-| Lambda        | `OriginalsApiFn`                | Yes               | Defined      | `/photo-originals` routes (presigned upload URL, list, get)                                   |
-| Lambda        | `ProcessOriginalFn`             | Yes               | Defined      | EventBridge trigger: resize with `sharp`, write to `photo-pictures`, store EXIF (2 GB, 5 min) |
+| Resource       | Name                             | Managed by CDK     | Status        | Notes                                                                                                                          |
+|----------------|----------------------------------|--------------------|---------------|--------------------------------------------------------------------------------------------------------------------------------|
+| DynamoDB       | `photo-categories`               | No (referenced)    | Existing      | No GSIs                                                                                                                        |
+| DynamoDB       | `photo-pictures`                 | No (referenced)    | Existing      | No GSIs. Photos of the sell-photos app (app2)                                                                                  |
+| DynamoDB       | `categories`, `pictures`         | No (referenced)    | Existing      | No GSIs. Art photo app (app1): categories and photos                                                                           |
+| DynamoDB       | `photo-users`                    | Yes                | Deployed      | PK `userId`, GSI `username-index`, on-demand, retained                                                                         |
+| DynamoDB       | `photo-user-profiles`            | Yes                | Deployed      | PK `userId`, on-demand, retained                                                                                               |
+| Cognito        | Existing User Pool               | No (referenced)    | Referenced    | Referenced with `fromUserPoolId`; ID kept in git-ignored config                                                                |
+| API Gateway    | REST API `photo-catalex-api`     | Yes                | Deployed      | Stage `prod`, throttling, CORS, Cognito authorizer on every route                                                              |
+| Lambda         | `UsersApiFn`                     | Yes                | Defined       | Single handler for the `/user` and `/users` routes (same contract as the Angular app)                                          |
+| Lambda         | `CatalogApiFn`                   | Yes                | Defined       | `/photo-categories`, `/photo-pictures` (app2) and `/categories`, `/pictures` (app1) routes (admin writes, authenticated reads) |
+| S3             | `photo-ca-user-profiles`         | No (referenced)    | Existing      | Avatars under `avatars/` (presigned upload/read)                                                                               |
+| DynamoDB       | `photo-originals`                | Yes                | Defined       | PK `id`, on-demand, retained. Upload status, file info and EXIF data                                                           |
+| S3             | `photo-pictures-originals`       | No (referenced)    | Existing      | Originals, no size limit. Key `<id>/<fileName>`; CORS already allows PUT                                                       |
+| S3             | `photo-pictures`                 | No (referenced)    | Existing      | Website copies (long side max 1000px, JPEG), key `<id>/0.jpg`                                                                  |
+| Lambda         | `OriginalsApiFn`                 | Yes                | Defined       | `/photo-originals` routes (presigned upload URL, list, get)                                                                    |
+| Lambda         | `ProcessOriginalFn`              | Yes                | Defined       | EventBridge trigger: resize with `sharp`, write to `photo-pictures`, store EXIF (2 GB, 5 min)                                  |
 
 Planned, not yet in the stack: CloudFront.
 
@@ -59,12 +60,12 @@ Responses are wrapped as `{ "data": ... }` and errors as `{ "message", "code" }`
 
 ## Permissions
 
-| Function             | Access                                                                                                                                                   |
-|----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `UsersApiFn`         | `photo-users`: Get/Put/Update/Query/Scan; `photo-user-profiles`: Get/Put/Update; S3 `photo-ca-user-profiles/avatars/*`: Get/Put. No delete anywhere.     |
-| `CatalogApiFn`       | `photo-categories` and `photo-pictures`: Get/Put/Update/Scan. No delete.                                                                                 |
-| `OriginalsApiFn`     | `photo-originals`: Get/Put/Scan; S3 `photo-pictures-originals`: Put (presign). No delete.                                                                |
-| `ProcessOriginalFn`  | `photo-originals`: Update; S3 `photo-pictures-originals`: Get; S3 `photo-pictures`: Put. No delete.                                                      |
+| Function              | Access                                                                                                                                                    |
+|-----------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `UsersApiFn`          | `photo-users`: Get/Put/Update/Query/Scan; `photo-user-profiles`: Get/Put/Update; S3 `photo-ca-user-profiles/avatars/*`: Get/Put. No delete anywhere.      |
+| `CatalogApiFn`        | `photo-categories`, `photo-pictures`, `categories`, `pictures`: Get/Put/Update/Scan. No delete.                                                           |
+| `OriginalsApiFn`      | `photo-originals`: Get/Put/Scan; S3 `photo-pictures-originals`: Put (presign). No delete.                                                                 |
+| `ProcessOriginalFn`   | `photo-originals`: Update; S3 `photo-pictures-originals`: Get; S3 `photo-pictures`: Put. No delete.                                                       |
 
 ## Design decisions
 

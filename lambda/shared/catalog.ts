@@ -11,50 +11,67 @@ interface ResourceSpec {
   defaults: Record<string, unknown>;
 }
 
-export type CatalogResource = 'categories' | 'pictures';
+export type CatalogResource = 'categories' | 'artCategories' | 'pictures' | 'artPictures';
+
+const CATEGORY_FIELDS: ResourceSpec['fields'] = {
+  translationKey: 'string',
+  parentId: 'string',
+  projectId: 'string',
+  siteType: 'siteType',
+  positionId: 'number',
+  active: 'flagString',
+  carouselList: 'stringArray',
+  fileExt: 'string',
+};
+
+const PICTURE_SPEC: ResourceSpec = {
+  idType: 'string',
+  fields: {
+    translationKey: 'string',
+    fileName: 'string',
+    fileExt: 'string',
+    categoryId: 'number',
+    subcategoryId: 'number',
+    positionId: 'number',
+    active: 'flagNumber',
+    width: 'number',
+    height: 'number',
+    badges: 'stringArray',
+  },
+  required: ['translationKey', 'categoryId'],
+  defaults: { subcategoryId: 0, active: 0, badges: [], fileExt: 'jpg' },
+};
 
 const SPECS: Record<CatalogResource, ResourceSpec> = {
   categories: {
     idType: 'number',
-    fields: {
-      translationKey: 'string',
-      parentId: 'string',
-      projectId: 'string',
-      siteType: 'siteType',
-      positionId: 'number',
-      active: 'flagString',
-      carouselList: 'stringArray',
-      fileExt: 'string',
-    },
+    fields: CATEGORY_FIELDS,
     required: ['translationKey'],
     defaults: { parentId: '0', projectId: 'photo-catalinalexandru', siteType: 'photo', active: '0', carouselList: [], fileExt: 'jpg' },
   },
-  pictures: {
-    idType: 'string',
-    fields: {
-      translationKey: 'string',
-      fileName: 'string',
-      fileExt: 'string',
-      categoryId: 'number',
-      subcategoryId: 'number',
-      positionId: 'number',
-      active: 'flagNumber',
-      width: 'number',
-      height: 'number',
-      badges: 'stringArray',
-    },
-    required: ['translationKey', 'categoryId'],
-    defaults: { subcategoryId: 0, active: 0, badges: [], fileExt: 'jpg' },
+  artCategories: {
+    idType: 'number',
+    fields: CATEGORY_FIELDS,
+    required: ['translationKey'],
+    defaults: { parentId: '0', projectId: 'catalinalexandru', siteType: 'art', active: '0', carouselList: [], fileExt: 'jpg' },
   },
+  pictures: PICTURE_SPEC,
+  artPictures: PICTURE_SPEC,
 };
 
 export type CatalogRoute = { resource: CatalogResource; id?: string };
 
 export const matchCatalogRoute = (path: string): CatalogRoute | null => {
-  const match = /^\/photo-(categories|pictures)(?:\/([^/]+))?$/.exec(path.replace(/\/+$/, ''));
+  const match = /^\/(photo-categories|photo-pictures|categories|pictures)(?:\/([^/]+))?$/.exec(path.replace(/\/+$/, ''));
   if (!match) return null;
+  const resources: Record<string, CatalogResource> = {
+    'photo-categories': 'categories',
+    'photo-pictures': 'pictures',
+    categories: 'artCategories',
+    pictures: 'artPictures',
+  };
   return {
-    resource: match[1] as CatalogResource,
+    resource: resources[match[1]],
     ...(match[2] ? { id: decodeURIComponent(match[2]) } : {}),
   };
 };
@@ -140,7 +157,7 @@ export class CatalogService {
   async list(resource: CatalogResource, claims: UserClaims, query: Record<string, string | undefined>) {
     callerUserId(claims);
     const extra: Record<string, unknown> = {};
-    if (resource === 'pictures' && query.categoryId !== undefined) {
+    if ((resource === 'pictures' || resource === 'artPictures') && query.categoryId !== undefined) {
       extra.FilterExpression = '#categoryId = :categoryId';
       extra.ExpressionAttributeNames = { '#categoryId': 'categoryId' };
       extra.ExpressionAttributeValues = { ':categoryId': parseField('categoryId', 'number', query.categoryId) };

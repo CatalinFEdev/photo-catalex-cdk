@@ -22,6 +22,8 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
   public readonly userPool: cognito.IUserPool;
   public readonly categoriesTable: dynamodb.ITable;
   public readonly picturesTable: dynamodb.ITable;
+  public readonly artCategoriesTable: dynamodb.ITable;
+  public readonly artPicturesTable: dynamodb.ITable;
   public readonly usersTable: dynamodb.Table;
   public readonly userProfilesTable: dynamodb.Table;
   public readonly avatarBucket: s3.IBucket;
@@ -41,6 +43,8 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
 
     this.categoriesTable = dynamodb.Table.fromTableName(this, 'PhotoCategories', 'photo-categories');
     this.picturesTable = dynamodb.Table.fromTableName(this, 'PhotoPictures', 'photo-pictures');
+    this.artCategoriesTable = dynamodb.Table.fromTableName(this, 'ArtCategories', 'categories');
+    this.artPicturesTable = dynamodb.Table.fromTableName(this, 'ArtPictures', 'pictures');
 
     this.usersTable = new dynamodb.Table(this, 'PhotoUsers', {
       tableName: 'photo-users',
@@ -88,11 +92,15 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
       environment: {
         CATEGORIES_TABLE_NAME: this.categoriesTable.tableName,
         PICTURES_TABLE_NAME: this.picturesTable.tableName,
+        ART_CATEGORIES_TABLE_NAME: this.artCategoriesTable.tableName,
+        ART_PICTURES_TABLE_NAME: this.artPicturesTable.tableName,
       },
     });
     const catalogActions = ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Scan'];
     this.categoriesTable.grant(this.catalogApiFn, ...catalogActions);
     this.picturesTable.grant(this.catalogApiFn, ...catalogActions);
+    this.artCategoriesTable.grant(this.catalogApiFn, ...catalogActions);
+    this.artPicturesTable.grant(this.catalogApiFn, ...catalogActions);
 
     this.originalsTable = new dynamodb.Table(this, 'PhotoOriginals', {
       tableName: 'photo-originals',
@@ -192,7 +200,16 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
     addMethods(userById.addResource('avatar'), ['POST']);
 
     // Reads for any signed-in user; writes are restricted to the `admins` group in the Lambda
-    const catalogApi = new apigateway.LambdaIntegration(this.catalogApiFn);
+    // A single wildcard permission avoids per-route statements overflowing the 20KB Lambda policy limit
+    const catalogApi = new apigateway.AwsIntegration({
+      service: 'lambda',
+      proxy: true,
+      path: `2015-03-31/functions/${this.catalogApiFn.functionArn}/invocations`,
+    });
+    this.catalogApiFn.addPermission('ApiInvokeAllRoutes', {
+      principal: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      sourceArn: this.api.arnForExecuteApi('*', '/*', '*'),
+    });
     const addCatalogRoutes = (name: string) => {
       const collection = this.api.root.addResource(name);
       ['GET', 'POST', 'PUT'].forEach((method) => collection.addMethod(method, catalogApi, secured));
@@ -201,6 +218,8 @@ export class PhotoCatalexCdkStack extends cdk.Stack {
     };
     addCatalogRoutes('photo-categories');
     addCatalogRoutes('photo-pictures');
+    addCatalogRoutes('categories');
+    addCatalogRoutes('pictures');
 
     const originalsApi = new apigateway.LambdaIntegration(this.originalsApiFn);
     const originals = this.api.root.addResource('photo-originals');

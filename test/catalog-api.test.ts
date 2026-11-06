@@ -18,6 +18,8 @@ import { matchCatalogRoute } from '../lambda/shared/catalog';
 
 process.env.CATEGORIES_TABLE_NAME = 'cats';
 process.env.PICTURES_TABLE_NAME = 'pics';
+process.env.ART_CATEGORIES_TABLE_NAME = 'art-cats';
+process.env.ART_PICTURES_TABLE_NAME = 'art-pics';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { handler } = require('../lambda/catalog-api');
@@ -41,7 +43,56 @@ describe('matchCatalogRoute', () => {
     expect(matchCatalogRoute('/photo-categories')).toEqual({ resource: 'categories' });
     expect(matchCatalogRoute('/photo-pictures/12/')).toEqual({ resource: 'pictures', id: '12' });
     expect(matchCatalogRoute('/photo-pictures/1/2')).toBeNull();
+    expect(matchCatalogRoute('/categories/3')).toEqual({ resource: 'artCategories', id: '3' });
+    expect(matchCatalogRoute('/pictures/7')).toEqual({ resource: 'artPictures', id: '7' });
     expect(matchCatalogRoute('/other')).toBeNull();
+  });
+});
+
+describe('art categories', () => {
+  test('non-admins cannot write', async () => {
+    const res = await call('POST', '/categories', member, { body: JSON.stringify({ translationKey: 'x' }) });
+    expect(res.statusCode).toBe(403);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('admin creates an art category in the categories table', async () => {
+    send.mockResolvedValueOnce({ Items: [{ id: 1 }] }).mockResolvedValueOnce({});
+    const res = await call('POST', '/categories', admin, { body: JSON.stringify({ translationKey: 'x' }) });
+    expect(res.statusCode).toBe(201);
+    expect(send.mock.calls[1][0].input.TableName).toBe('art-cats');
+    expect(body(res).data.siteType).toBe('art');
+  });
+});
+
+describe('art pictures', () => {
+  test('non-admins cannot write', async () => {
+    const res = await call('POST', '/pictures', member, { body: JSON.stringify({ translationKey: 'x', categoryId: 1 }) });
+    expect(res.statusCode).toBe(403);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('admin creates a picture in the pictures table', async () => {
+    send.mockResolvedValueOnce({ Items: [{ id: '4' }] }).mockResolvedValueOnce({});
+    const res = await call('POST', '/pictures', admin, { body: JSON.stringify({ translationKey: 'x', categoryId: 2 }) });
+    expect(res.statusCode).toBe(201);
+    expect(send.mock.calls[1][0].input.TableName).toBe('art-pics');
+    expect(body(res).data).toMatchObject({ id: '5', categoryId: 2 });
+  });
+
+  test('lists the pictures table filtered by categoryId, with string keys', async () => {
+    send.mockResolvedValueOnce({ Items: [] }).mockResolvedValueOnce({ Item: { id: '9' } });
+    await call('GET', '/pictures', member, { queryStringParameters: { categoryId: '3' } });
+    await call('GET', '/pictures/9', member);
+    expect(send.mock.calls[0][0].input.TableName).toBe('art-pics');
+    expect(send.mock.calls[0][0].input.ExpressionAttributeValues).toEqual({ ':categoryId': 3 });
+    expect(send.mock.calls[1][0].input.Key).toEqual({ id: '9' });
+  });
+
+  test('photo-pictures still targets the app2 table', async () => {
+    send.mockResolvedValueOnce({ Items: [] });
+    await call('GET', '/photo-pictures', member);
+    expect(send.mock.calls[0][0].input.TableName).toBe('pics');
   });
 });
 
